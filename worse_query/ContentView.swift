@@ -4,6 +4,7 @@
 import SwiftUI
 import UIKit
 import QuickLook
+import UniformTypeIdentifiers
 
 private enum BrowserDestination: Hashable {
     case category(ContainerCategory)
@@ -52,6 +53,16 @@ struct ContentView: View {
             if ProcessInfo.processInfo.arguments.contains("--check-icons") {
                 UserDefaults.standard.set(FolderLayout.icons.rawValue, forKey: "FolderLayout")
                 browsePath = [.category(ContainerCategory.all[1])]
+            }
+            if ProcessInfo.processInfo.arguments.contains("--show-documents"),
+               let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first {
+                browsePath = [.folder(BrowserItem(path: documents.path, name: "Documents", isDirectory: true, size: 0), nil)]
+            }
+            if ProcessInfo.processInfo.arguments.contains("--verify-file-operations") {
+                let arguments = ProcessInfo.processInfo.arguments
+                let index = arguments.firstIndex(of: "--operation-test-directory")
+                let parent = index.flatMap { $0 + 1 < arguments.count ? URL(fileURLWithPath: arguments[$0 + 1]) : nil }
+                await model.VerifyFileOperations(parent: parent)
             }
             if ProcessInfo.processInfo.arguments.contains("--verify-view-options") {
                 let valid = FolderOrdering.Verify()
@@ -181,6 +192,16 @@ private struct ContainerScreen: View {
     }
 }
 
+private final class PendingCopy {
+    let source: URL
+    private let scoped: Bool
+    init(source: URL) {
+        self.source = source
+        scoped = source.startAccessingSecurityScopedResource()
+    }
+    deinit { if scoped { source.stopAccessingSecurityScopedResource() } }
+}
+
 private struct FolderScreen: View {
     let item: BrowserItem
     let root: String?
@@ -190,6 +211,14 @@ private struct FolderScreen: View {
     @State private var message: String?
     @State private var search = ""
     @State private var preview: BrowserItem?
+    @State private var busy = false
+    @State private var newFolder = false
+    @State private var renameItem: BrowserItem?
+    @State private var deleteItem: BrowserItem?
+    @State private var nameInput = ""
+    @State private var importing = false
+    @State private var pendingCopy: PendingCopy?
+    @State private var operationError: String?
     @AppStorage("FolderLayout") private var layout: FolderLayout = .list
     @AppStorage("FolderSort") private var sort: FolderSort = .name
     @AppStorage("SortAscending") private var ascending = true
@@ -203,58 +232,136 @@ private struct FolderScreen: View {
         FileCollection(layout: layout) {
             ForEach(filtered) { entry in
                 if entry.isDirectory {
-                    if let category = ContainerCategory.all.first(where: { $0.path == entry.path }) {
+                    if let category = ContainerCategory.all.first(where: { $0.path == entry.directoryPath }) {
                         NavigationLink(value: BrowserDestination.category(category)) { ItemLabel(entry) }
                     } else {
-                        NavigationLink(value: BrowserDestination.folder(entry, root ?? model.Root(for: entry.path))) { ItemLabel(entry) }
-                            .contextMenu { FavoriteButton(item: entry, model: model) }
+                        NavigationLink(value: BrowserDestination.folder(entry, model.Root(for: entry.directoryPath) ?? root)) { ItemLabel(entry) }
+                            .contextMenu { ItemActions(entry) }
                     }
                 } else {
                     Button { preview = entry } label: { ItemLabel(entry) }
                         .buttonStyle(.plain)
-                        .contextMenu {
-                            ShareLink(item: entry.url) { Label("Share", systemImage: "square.and.arrow.up") }
-                            Button("Copy Path", systemImage: "doc.on.doc") { UIPasteboard.general.string = entry.path }
-                        }
+                        .contextMenu { ItemActions(entry) }
                 }
             }
         }
+        .disabled(busy)
         .overlay {
             if loading && items.isEmpty { ProgressView("Opening folder…") }
             else if let message, items.isEmpty { FolderError(message: message) { Task { await Load(refresh: true) } } }
-            else if filtered.isEmpty {
-                ContentUnavailableView(search.isEmpty ? "Empty Folder" : "No Results", systemImage: "folder")
-            }
+            else if filtered.isEmpty { ContentUnavailableView(search.isEmpty ? "Empty Folder" : "No Results", systemImage: "folder") }
         }
         .navigationTitle(item.name)
         .navigationBarTitleDisplayMode(.inline)
-        .safeAreaInset(edge: .top, spacing: 0) { PinnedSearchBar(text: $search, prompt: "Search") }
+        .safeAreaInset(edge: .top, spacing: 0) {
+            VStack(spacing: 0) {
+                PinnedSearchBar(text: $search, prompt: "Search")
+                if busy { ProgressView("Working…").font(.caption).padding(.bottom, 8) }
+            }
+        }
         .safeAreaInset(edge: .bottom, spacing: 0) { FolderCount(count: filtered.count) }
         .toolbar {
             Menu {
+                Section {
+                    Button("New Folder", systemImage: "folder.badge.plus") { nameInput = "New Folder"; newFolder = true }
+                    Button("Import File…", systemImage: "square.and.arrow.down") { importing = true }
+                    if let copied = model.copiedItem {
+                        Button("Paste “\(copied.name)”", systemImage: "doc.on.clipboard") { BeginCopy(copied.url) }
+                        Button("Cancel Copy", systemImage: "xmark") { model.copiedItem = nil }
+                    }
+                }
                 FolderViewOptions()
                 Section {
                     Button("Refresh", systemImage: "arrow.clockwise") { Task { await Load(refresh: true) } }
                     FavoriteButton(item: item, model: model)
-                    Button("Copy Path", systemImage: "doc.on.doc") { UIPasteboard.general.string = item.path }
+                    Button("Copy Path", systemImage: "doc.on.doc") { UIPasteboard.general.string = item.directoryPath }
                 }
             } label: { Image(systemName: "ellipsis.circle") }
-            .accessibilityLabel("View and Sort Options")
+            .accessibilityLabel("Folder actions, view and sort options")
+            .disabled(busy)
         }
-        .refreshable { await Load(refresh: true) }
+        .refreshable { if !busy { await Load(refresh: true) } }
         .task { await Load() }
         .sheet(item: $preview) { entry in PreviewScreen(item: entry) }
+        .fileImporter(isPresented: $importing, allowedContentTypes: [.item], allowsMultipleSelection: false) { result in
+            switch result {
+            case .success(let urls): if let first = urls.first { BeginCopy(first) }
+            case .failure(let error): operationError = error.localizedDescription
+            }
+        }
+        .alert("New Folder", isPresented: $newFolder) {
+            TextField("Name", text: $nameInput)
+            Button("Cancel", role: .cancel) { }
+            Button("Create") { let name = nameInput; Task { await Run(.newFolder(parent: item.directoryPath, name: name)) } }
+        }
+        .alert("Rename", isPresented: Binding(get: { renameItem != nil }, set: { if !$0 { renameItem = nil } }), presenting: renameItem) { entry in
+            TextField("Name", text: $nameInput)
+            Button("Cancel", role: .cancel) { renameItem = nil }
+            Button("Save") {
+                let name = nameInput; renameItem = nil
+                Task { await Run(.rename(path: entry.path, name: name)) }
+            }
+        }
+        .confirmationDialog("Delete “\(deleteItem?.name ?? "item")”?", isPresented: Binding(
+            get: { deleteItem != nil }, set: { if !$0 { deleteItem = nil } }), titleVisibility: .visible, presenting: deleteItem) { entry in
+            Button("Delete", role: .destructive) {
+                deleteItem = nil
+                Task { await Run(.delete(path: entry.path)) }
+            }
+        } message: { _ in Text("This permanently deletes the selected item and any contents.") }
+        .confirmationDialog("An item named “\(pendingCopy?.source.lastPathComponent ?? "item")” already exists.", isPresented: Binding(
+            get: { pendingCopy != nil }, set: { if !$0 { pendingCopy = nil } }), titleVisibility: .visible, presenting: pendingCopy) { request in
+            Button("Keep Both") { pendingCopy = nil; Task { await Copy(request, policy: .keepBoth) } }
+            Button("Replace", role: .destructive) { pendingCopy = nil; Task { await Copy(request, policy: .replace) } }
+            Button("Cancel", role: .cancel) { pendingCopy = nil }
+        } message: { _ in Text("Keep Both creates a separate copy. Replace overwrites an existing file. Folders are never replaced.") }
+        .alert("Couldn’t Complete Action", isPresented: Binding(
+            get: { operationError != nil }, set: { if !$0 { operationError = nil } })) {
+            Button("OK", role: .cancel) { operationError = nil }
+        } message: { Text(operationError ?? "Unknown error") }
+        .onDisappear { pendingCopy = nil }
     }
+
     @ViewBuilder private func ItemLabel(_ entry: BrowserItem) -> some View {
-        if layout == .icons { FileTile(item: entry) }
-        else { FileRow(item: entry) }
+        if layout == .icons { FileTile(item: entry) } else { FileRow(item: entry) }
+    }
+    @ViewBuilder private func ItemActions(_ entry: BrowserItem) -> some View {
+        Button("Copy", systemImage: "doc.on.doc") { model.Copy(entry) }
+        Button("Rename", systemImage: "pencil") { nameInput = entry.name; renameItem = entry }
+        ShareLink(item: entry.url) { Label("Share", systemImage: "square.and.arrow.up") }
+        if entry.isDirectory { FavoriteButton(item: entry, model: model) }
+        Button("Copy Path", systemImage: "link") { UIPasteboard.general.string = entry.path }
+        Button("Delete", systemImage: "trash", role: .destructive) { deleteItem = entry }
     }
     private func Load(refresh: Bool = false) async {
         loading = true
         defer { loading = false }
-        do { items = try await model.Directory(item.path, root: root, refresh: refresh); message = nil }
+        do { items = try await model.Directory(item.directoryPath, root: root, refresh: refresh); message = nil }
         catch { message = error.localizedDescription }
     }
+    private func Run(_ operation: FileOperation) async {
+        guard !busy else { return }; busy = true
+        defer { busy = false }
+        do { _ = try await model.Mutate(operation); await Load(refresh: true) }
+        catch { operationError = error.localizedDescription }
+    }
+    private func BeginCopy(_ source: URL) {
+        guard !busy else { return }
+        let request = PendingCopy(source: source)
+        Task { await Copy(request, policy: .fail) }
+    }
+    private func Copy(_ request: PendingCopy, policy: CollisionPolicy) async {
+        guard !busy else { return }
+        busy = true
+        defer { busy = false }
+        do {
+            _ = try await model.Mutate(.copy(source: request.source.path, directory: item.directoryPath, policy: policy))
+            await Load(refresh: true)
+        } catch FileActionError.exists {
+            pendingCopy = request
+        } catch { operationError = error.localizedDescription }
+    }
+
 }
 
 private struct FileCollection<Content: View>: View {
@@ -429,7 +536,7 @@ private struct FavoritesScreen: View {
     var body: some View {
         List {
             ForEach(model.favorites) { item in
-                NavigationLink(value: BrowserDestination.folder(item, model.Root(for: item.path))) { FileRow(item: item) }
+                NavigationLink(value: BrowserDestination.folder(item, model.Root(for: item.directoryPath))) { FileRow(item: item) }
             }
             .onDelete { indices in
                 for index in indices.sorted(by: >) { model.ToggleFavorite(model.favorites[index]) }

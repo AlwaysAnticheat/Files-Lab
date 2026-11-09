@@ -245,12 +245,12 @@
 				CLANG_ENABLE_MODULES = YES;
 				CODE_SIGN_ENTITLEMENTS = worse_query/worse_query.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 7;
+				CURRENT_PROJECT_VERSION = 8;
 				DEVELOPMENT_TEAM = "";
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				APP_GROUP_IDENTIFIER = group.com.example.FilesLab;
-				INFOPLIST_KEY_FilesLabAppGroup = "$(APP_GROUP_IDENTIFIER)";
+				INFOPLIST_FILE = Configuration/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = "Files Lab";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
@@ -263,7 +263,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.3;
+				MARKETING_VERSION = 1.4;
 				PRODUCT_BUNDLE_IDENTIFIER = "com.example.FilesLab";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
@@ -291,12 +291,12 @@
 				CLANG_ENABLE_MODULES = YES;
 				CODE_SIGN_ENTITLEMENTS = worse_query/worse_query.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 7;
+				CURRENT_PROJECT_VERSION = 8;
 				DEVELOPMENT_TEAM = "";
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				APP_GROUP_IDENTIFIER = group.com.example.FilesLab;
-				INFOPLIST_KEY_FilesLabAppGroup = "$(APP_GROUP_IDENTIFIER)";
+				INFOPLIST_FILE = Configuration/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = "Files Lab";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
@@ -309,7 +309,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.3;
+				MARKETING_VERSION = 1.4;
 				PRODUCT_BUNDLE_IDENTIFIER = "com.example.FilesLab";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;

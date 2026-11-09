@@ -29,10 +29,23 @@ These screenshots were captured from the app with its **sample-data mode** enabl
 - **Favorites:** persistent shortcuts to folders.
 - **Activity:** searchable event history, an Errors filter, event details, timings, and text export.
 - Native Quick Look previews and sharing.
+- Copy/paste, rename, permanent deletion, new folders, and file import with Keep Both/Replace conflict handling in writable locations.
 - Cached discovery and bounded directory/log caches.
 - **About:** original author credits, source links, and the bundled GPL license.
 
-Access depends on the underlying PoC and the running iOS version. Some filesystem paths remain inaccessible. Size sorting uses file byte sizes and known container item counts; it does not recursively calculate folder byte totals.
+Access depends on the underlying PoC and the running iOS version. Some filesystem paths remain inaccessible. A successful directory read does not imply write access: file actions can still be denied by iOS. Cross-container creation was denied in one physical-device check even though reading worked. Size sorting uses file byte sizes and known container item counts; it does not recursively calculate folder byte totals.
+
+## Managing files
+
+Inside a folder:
+
+- Touch and hold a file or folder for **Copy**, **Rename**, **Share**, and **Delete**.
+- After choosing Copy, navigate to the destination and use **••• → Paste**.
+- Use **••• → New Folder** or **Import File…** to add content.
+- A name conflict offers **Keep Both**, **Replace**, or **Cancel**. Replace is limited to files; it never merges or replaces folders.
+- Delete requires confirmation and permanently removes the selected item and its contents. There is no Recently Deleted recovery feature.
+
+File copies are staged in the destination directory. Existing-file replacement uses a same-directory atomic rename after the staged copy succeeds. Errors are shown and recorded in Activity. These actions do not bypass additional iOS write restrictions.
 
 ## Original project and provenance
 
@@ -78,6 +91,16 @@ Tools/InstallSigned.sh YOUR_DEVICE_ID /absolute/path/to/YourSignedApp.ipa
 ```
 
 The script also accepts a signed `.app` directory. It does not sign or modify the supplied build.
+
+## Regression checks
+
+```sh
+Tools/TestCore.sh
+```
+
+This runs the actual file-operation and sorting code against a uniquely named temporary fixture folder. It checks copying, conflicts, atomic replacement, preservation after a failed replacement, keeping both, renaming, deletion, recursive-copy rejection, invalid names, and symlink deletion without deleting its target. Fixture data is removed after the check.
+
+The Debug launch argument `--verify-file-operations` runs the same fixture checks in the app's temporary directory on a physical device. Only disposable test data is changed.
 
 ## Screenshot mode
 

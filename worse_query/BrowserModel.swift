@@ -5,30 +5,6 @@ import Foundation
 import Combine
 import Darwin
 
-struct BrowserItem: Identifiable, Hashable, Codable {
-    let path: String
-    let name: String
-    let isDirectory: Bool
-    let size: Int64
-    var modifiedDate: Date? = nil
-    var itemCount: Int? = nil
-    var id: String { path }
-    var url: URL { URL(fileURLWithPath: path, isDirectory: isDirectory) }
-}
-
-struct ContainerCategory: Identifiable, Hashable {
-    let name: String
-    let path: String
-    let symbol: String
-    var id: String { path }
-    static let all: [ContainerCategory] = [
-        .init(name: "App Groups", path: "/private/var/mobile/Containers/Shared/AppGroup", symbol: "square.stack.3d.up.fill"),
-        .init(name: "Applications", path: "/private/var/mobile/Containers/Data/Application", symbol: "square.grid.2x2"),
-        .init(name: "App Extensions", path: "/private/var/mobile/Containers/Data/PluginKitPlugin", symbol: "puzzlepiece.extension.fill"),
-        .init(name: "Internal Daemons", path: "/private/var/mobile/Containers/Data/InternalDaemon", symbol: "gearshape.2.fill")
-    ]
-}
-
 enum EventKind: String, Codable {
     case info, success, error
 }
@@ -115,7 +91,7 @@ private struct AccessFailure: LocalizedError {
 final class FileAccess: @unchecked Sendable {
     private let queue = DispatchQueue(label: "FilesLab.Access", qos: .userInitiated)
     private var handles: [String: Int64] = [:]
-    private let group = Bundle.main.object(forInfoDictionaryKey: "FilesLabAppGroup") as? String ?? "group.com.example.FilesLab"
+    private let group = Bundle.main.object(forInfoDictionaryKey: "FilesLabAppGroup") as? String ?? ""
     private let files = FileManager.default
 
     func Discover(_ category: ContainerCategory) async throws -> ([BrowserItem], [BrowserEvent]) {
@@ -138,19 +114,43 @@ final class FileAccess: @unchecked Sendable {
         }
     }
 
+    func Mutate(_ operation: FileOperation, roots: [String]) async throws -> URL {
+        try await withCheckedThrowingContinuation { continuation in
+            queue.async {
+                do {
+                    for root in Set(roots) { try self.Acquire(root) }
+                    continuation.resume(returning: try FileOperations.Apply(operation))
+                } catch { continuation.resume(throwing: error) }
+            }
+        }
+    }
+
+    func VerifyOperations(parent: URL?, root: String?) async throws -> [String] {
+        try await withCheckedThrowingContinuation { continuation in
+            queue.async {
+                do {
+                    if let root { try self.Acquire(root) }
+                    continuation.resume(returning: try FileOperations.Verify(in: parent))
+                }
+                catch { continuation.resume(throwing: error) }
+            }
+        }
+    }
+
     func ReadDirectory(_ path: String) throws -> [BrowserItem] {
         let urls = try files.contentsOfDirectory(at: URL(fileURLWithPath: path),
             includingPropertiesForKeys: [.isDirectoryKey, .fileSizeKey, .isSymbolicLinkKey, .contentModificationDateKey])
         return urls.map { url in
             let values = try? url.resourceValues(forKeys: [.isDirectoryKey, .fileSizeKey, .isSymbolicLinkKey, .contentModificationDateKey])
             var directory = ObjCBool(values?.isDirectory ?? false)
-            var path = url.path
+            var resolved: String?
             if values?.isSymbolicLink == true {
                 _ = files.fileExists(atPath: url.path, isDirectory: &directory)
-                if directory.boolValue { path = url.resolvingSymlinksInPath().path }
+                if directory.boolValue { resolved = url.resolvingSymlinksInPath().path }
             }
-            return BrowserItem(path: path, name: url.lastPathComponent,
-                isDirectory: directory.boolValue, size: Int64(values?.fileSize ?? 0), modifiedDate: values?.contentModificationDate)
+            return BrowserItem(path: url.path, name: url.lastPathComponent,
+                isDirectory: directory.boolValue, size: Int64(values?.fileSize ?? 0),
+                modifiedDate: values?.contentModificationDate, resolvedPath: resolved)
         }.sorted {
             if $0.isDirectory != $1.isDirectory { return $0.isDirectory }
             return $0.name.localizedStandardCompare($1.name) == .orderedAscending
@@ -158,6 +158,9 @@ final class FileAccess: @unchecked Sendable {
     }
 
     private func Acquire(_ root: String) throws {
+        guard !group.isEmpty, group != "group.com.example.FilesLab", !group.contains("$(") else {
+            throw AccessFailure(message: "Configure APP_GROUP_IDENTIFIER with an App Group permitted by your signing profile.")
+        }
         guard handles[root] == nil else { return }
         let alternate = root.contains("/Containers/Shared/AppGroup/") && ProcessInfo.processInfo.operatingSystemVersion.majorVersion == 26
         let handle = worse_query(root, group, alternate, false)
@@ -206,6 +209,7 @@ final class BrowserModel: ObservableObject {
     @Published var errors: [String: String] = [:]
     let activity = ActivityLog()
     @Published var favorites: [BrowserItem] = []
+    @Published var copiedItem: BrowserItem?
     private let access = FileAccess()
     private var directoryCache: [String: [BrowserItem]] = [:]
     private var directoryCacheOrder: [String] = []
@@ -288,7 +292,63 @@ final class BrowserModel: ObservableObject {
         if !ScreenshotData.enabled, let data = try? JSONEncoder().encode(favorites) { defaults.set(data, forKey: "Favorites") }
     }
 
+    func Mutate(_ operation: FileOperation) async throws -> URL {
+        guard !ScreenshotData.enabled else { throw FileActionError.demoMode }
+        let roots = operation.permissionPaths.compactMap { Root(for: $0) }
+        do {
+            let result = try await access.Mutate(operation, roots: roots)
+            directoryCache.removeAll(); directoryCacheOrder.removeAll()
+            for parent in Set(operation.permissionPaths) {
+                for category in ContainerCategory.all {
+                    guard var entries = containers[category.path],
+                          let index = entries.firstIndex(where: { $0.path == parent }),
+                          let children = try? await access.List(parent, root: Root(for: parent)) else { continue }
+                    entries[index].itemCount = children.count
+                    containers[category.path] = entries
+                }
+            }
+            if let data = try? JSONEncoder().encode(containers) { defaults.set(data, forKey: "ContainerCache") }
+            switch operation {
+            case .delete(let path):
+                favorites.removeAll { $0.path == path || $0.path.hasPrefix(path + "/") }
+                if let copied = copiedItem, copied.path == path || copied.path.hasPrefix(path + "/") { copiedItem = nil }
+            case .rename(let path, _):
+                favorites = favorites.map { item in
+                    guard item.path == path || item.path.hasPrefix(path + "/") else { return item }
+                    let renamed = result.path + item.path.dropFirst(path.count)
+                    return BrowserItem(path: renamed, name: item.path == path ? result.lastPathComponent : item.name,
+                        isDirectory: item.isDirectory, size: item.size)
+                }
+                if let copied = copiedItem, copied.path == path || copied.path.hasPrefix(path + "/") { copiedItem = nil }
+            default: break
+            }
+            if let data = try? JSONEncoder().encode(favorites) { defaults.set(data, forKey: "Favorites") }
+            Log(operation.title, detail: result.lastPathComponent, kind: .success, path: result.path)
+            return result
+        } catch FileActionError.exists(let name) {
+            throw FileActionError.exists(name)
+        } catch {
+            Log("File operation failed", detail: error.localizedDescription, path: operation.permissionPaths.last, error: true)
+            throw error
+        }
+    }
+
+    func Copy(_ item: BrowserItem) {
+        copiedItem = item
+        Log("Ready to copy", detail: "Choose a destination folder and tap Paste", path: item.path)
+    }
+
+    func VerifyFileOperations(parent: URL? = nil) async {
+        guard !ScreenshotData.enabled else { return }
+        do {
+            for result in try await access.VerifyOperations(parent: parent, root: parent.flatMap { Root(for: $0.path) }) {
+                Log("File operations verified", detail: result, kind: .success)
+            }
+        } catch { Log("File operation verification failed", detail: error.localizedDescription, error: true) }
+    }
+
     func Root(for path: String) -> String? {
+        let path = URL(fileURLWithPath: path).resolvingSymlinksInPath().path
         for category in ContainerCategory.all where path.hasPrefix(category.path + "/") {
             let remaining = path.dropFirst(category.path.count + 1)
             guard let component = remaining.split(separator: "/").first else { continue }
