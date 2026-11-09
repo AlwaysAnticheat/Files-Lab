@@ -84,6 +84,26 @@ Tools/BuildUnsigned.sh
 
 This produces `build/Build/Products/Debug-iphoneos/worse_query.app`. An unsigned build cannot be installed on a stock iPhone. Use Xcode with your own signing configuration to produce an installable build.
 
+### Make a shareable unsigned IPA
+
+```sh
+Tools/PackageUnsignedIPA.sh
+```
+
+This creates `build/FilesLab-unsigned.ipa` from a fresh unsigned iOS build. It contains generic `com.example.FilesLab` and `group.com.example.FilesLab` placeholders, no embedded provisioning profile, and no code signature.
+
+Before signing that IPA for a different Apple account, configure **both** identifiers to match an app and App Group permitted by that person's provisioning profile:
+
+```sh
+Tools/ConfigureUnsignedIPA.sh \
+  build/FilesLab-unsigned.ipa \
+  com.yourname.FilesLab \
+  group.com.yourname.FilesLab \
+  build/FilesLab-configured-unsigned.ipa
+```
+
+The result is still unsigned. Sign it with a tool that embeds the matching provisioning profile and signs every executable in the app bundle, then install the signed output. A profile that does not permit the configured App Group may allow installation but the exploit's group query will fail at runtime. If the signing tool cannot configure the required entitlements, build and sign from source in Xcode instead.
+
 ### Install a build you have already signed
 
 ```sh
