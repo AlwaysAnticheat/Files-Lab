@@ -1,0 +1,105 @@
+<p align="center"><img src="docs/icon.png" width="96" alt="Files Lab icon"></p>
+
+# Files Lab
+
+A native-style iOS file browser built with SwiftUI, using **[worse_query](https://github.com/forcequitOS/worse_query)** by **[Taj C (forcequit / forcequitOS)](https://github.com/forcequitOS)**.
+
+**All credit for the exploit, its original implementation, and `pathleak` enumeration belongs to the original author.** Files Lab adds the browsing interface and integration. We did not discover, invent, or create the exploit. This is an independent modification and does not represent the original author.
+
+[GPL-3.0-or-later](LICENSE) · [Attribution](NOTICE.md) · [Contributing](CONTRIBUTING.md)
+
+## Screenshots
+
+These screenshots were captured from the app with its **sample-data mode** enabled. They contain no personal device inventory, signing details, or real container paths.
+
+| Browse | Icons view |
+| --- | --- |
+| <img src="docs/screenshots/browse.png" width="260" alt="Browse tab with sample locations"> | <img src="docs/screenshots/icons.png" width="260" alt="Icons view with sample application folders"> |
+
+| Activity | About and credits |
+| --- | --- |
+| <img src="docs/screenshots/activity.png" width="260" alt="Activity tab with sample events"> | <img src="docs/screenshots/about.png" width="260" alt="About tab crediting the original exploit author"> |
+
+## Features
+
+- **Browse:** App Groups, Applications, App Extensions, Internal Daemons, and accessible filesystem locations.
+- Standard folder navigation with native Back behavior.
+- List and adaptive icon-grid layouts, with full names in the grid.
+- Pinned search; Name, Kind, Date, and Size sorting; ascending/descending order; folders-first and hidden-file options.
+- **Favorites:** persistent shortcuts to folders.
+- **Activity:** searchable event history, an Errors filter, event details, timings, and text export.
+- Native Quick Look previews and sharing.
+- Cached discovery and bounded directory/log caches.
+- **About:** original author credits, source links, and the bundled GPL license.
+
+Access depends on the underlying PoC and the running iOS version. Some filesystem paths remain inaccessible. Size sorting uses file byte sizes and known container item counts; it does not recursively calculate folder byte totals.
+
+## Original project and provenance
+
+The exploit and enumeration implementation come from [forcequitOS/worse_query](https://github.com/forcequitOS/worse_query), based on revision [`d1540e2`](https://github.com/forcequitOS/worse_query/tree/d1540e20cd82b974d891e0551ced6d6aeb570ac2).
+
+The upstream Objective-C exploit and `pathleak` files retain their original copyright and license notices. Files Lab adds SwiftUI browsing, navigation, presentation, favorites, activity, screenshots, and configurable build settings. See [NOTICE.md](NOTICE.md) for the attribution and modification notice.
+
+The upstream README describes targets as iOS 26.0–26.7.2 / 27.2. That is the upstream claim, not a guarantee of support for every device or build. Upstream also explicitly states that this PoC is not a jailbreak.
+
+## Build and run
+
+### Requirements
+
+- macOS with Xcode 26.2 or later and an iOS SDK.
+- A physical iPhone or iPad for meaningful exploit testing.
+- Your own Apple signing team, app identifier, registered App Group, and a profile that permits that group.
+- Developer Mode and pairing/trust configured on the device.
+
+No signing certificates, profiles, passwords, or device identifiers are included.
+
+### Configure your own signing
+
+1. Open `worse_query.xcodeproj` and select the `worse_query` scheme. The upstream project/target names are retained for provenance; the app is displayed as **Files Lab**.
+2. Under **Signing & Capabilities**, select your own team and replace `com.example.FilesLab` with a bundle identifier you control.
+3. Register an App Group for that app. In the target's **Build Settings → User-Defined**, set `APP_GROUP_IDENTIFIER` to the exact group identifier your profile permits.
+4. Confirm the App Groups entitlement resolves to that same identifier. The checked-in entitlement uses `$(APP_GROUP_IDENTIFIER)`, and the runtime reads the value from the generated Info.plist.
+5. Select your connected device and run.
+
+An arbitrary signature alone is insufficient: the provisioning profile must permit the configured App Group.
+
+### Compile without signing
+
+```sh
+Tools/BuildUnsigned.sh
+```
+
+This produces `build/Build/Products/Debug-iphoneos/worse_query.app`. An unsigned build cannot be installed on a stock iPhone. Use Xcode with your own signing configuration to produce an installable build.
+
+### Install a build you have already signed
+
+```sh
+Tools/InstallSigned.sh YOUR_DEVICE_ID /absolute/path/to/YourSignedApp.ipa
+```
+
+The script also accepts a signed `.app` directory. It does not sign or modify the supplied build.
+
+## Screenshot mode
+
+For privacy-safe UI previews, add `--demo-content` to the scheme's **Run → Arguments** in a Debug build. This mode uses sample folders/events, hides the status bar, and avoids reading real container contents or saving sample data over normal history.
+
+Additional Debug launch arguments:
+
+- `--show-activity` — open Activity.
+- `--show-about` — open About.
+- `--check-icons` — open the Applications sample category in Icons view.
+- `--check-pinned-search` — open a long list and scroll to its end for a pinned-search regression check.
+- `--verify-view-options` — exercise sorting/filtering regression checks.
+- `--verify-browser` — perform real container discovery and a directory round-trip check. This inspects real device metadata and is separate from screenshot mode.
+
+## Privacy and source distribution
+
+The public repository uses a clean source snapshot. It excludes local research exports, device logs, signed IPAs/apps, signing assets, per-user Xcode state, and personal machine paths. The supplied identifiers are generic configuration placeholders. Screenshots use sample data.
+
+The app keeps its discovery cache, favorites, and bounded Activity history locally in its own container. Exporting Activity is a user action; review exported paths before sharing them.
+
+## License
+
+Files Lab is distributed under the **GNU General Public License, version 3 or any later version (`GPL-3.0-or-later`)**, preserving the terms stated in the upstream source headers. See [LICENSE](LICENSE). The original license text is also bundled in the app.
+
+Original exploit/enumeration copyright © 2026 Taj C (forcequit). Files Lab interface and integration modifications © 2026 Files Lab contributors. The software is provided without warranty under the license terms.

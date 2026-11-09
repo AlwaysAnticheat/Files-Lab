@@ -1,0 +1,31 @@
+# Build products
+/build/
+/DerivedData/
+*.app/
+*.ipa
+*.dSYM/
+*.xcarchive/
+*.xcresult/
+.zsign_cache/
+
+# Signing and private configuration
+*.p12
+*.pfx
+*.mobileprovision
+*.provisionprofile
+*.key
+*.pem
+*.cer
+*.crt
+.env*
+!.env.example
+*.local.xcconfig
+
+# Device logs and local research
+/Research/
+*.log
+
+# Per-user IDE and OS files
+xcuserdata/
+*.xcuserstate
+.DS_Store
