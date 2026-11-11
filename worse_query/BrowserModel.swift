@@ -114,12 +114,13 @@ final class FileAccess: @unchecked Sendable {
         }
     }
 
-    func Mutate(_ operation: FileOperation, roots: [String]) async throws -> URL {
+    func Mutate(_ operation: FileOperation, roots: [String],
+                progress: @escaping (FileProgressUpdate) -> Void) async throws -> URL {
         try await withCheckedThrowingContinuation { continuation in
             queue.async {
                 do {
                     for root in Set(roots) { try self.Acquire(root) }
-                    continuation.resume(returning: try FileOperations.Apply(operation))
+                    continuation.resume(returning: try FileOperations.Apply(operation, progress: progress))
                 } catch { continuation.resume(throwing: error) }
             }
         }
@@ -208,8 +209,10 @@ final class BrowserModel: ObservableObject {
     @Published var loading: Set<String> = []
     @Published var errors: [String: String] = [:]
     let activity = ActivityLog()
+    let operationStatus = OperationStatus()
     @Published var favorites: [BrowserItem] = []
     @Published var copiedItem: BrowserItem?
+    @Published var movingItem: BrowserItem?
     private let access = FileAccess()
     private var directoryCache: [String: [BrowserItem]] = [:]
     private var directoryCacheOrder: [String] = []
@@ -294,9 +297,17 @@ final class BrowserModel: ObservableObject {
 
     func Mutate(_ operation: FileOperation) async throws -> URL {
         guard !ScreenshotData.enabled else { throw FileActionError.demoMode }
+        let operationId = operationStatus.Begin(operation.actionTitle, symbol: operation.symbol)
+        let status = operationStatus
+        var lastReport = UInt64(0)
         let roots = operation.permissionPaths.compactMap { Root(for: $0) }
         do {
-            let result = try await access.Mutate(operation, roots: roots)
+            let result = try await access.Mutate(operation, roots: roots) { update in
+                let now = DispatchTime.now().uptimeNanoseconds
+                if now - lastReport < 80_000_000 && update.fraction != 1 { return }
+                lastReport = now
+                Task { @MainActor in status.Update(operationId, update) }
+            }
             directoryCache.removeAll(); directoryCacheOrder.removeAll()
             for parent in Set(operation.permissionPaths) {
                 for category in ContainerCategory.all {
@@ -312,7 +323,8 @@ final class BrowserModel: ObservableObject {
             case .delete(let path):
                 favorites.removeAll { $0.path == path || $0.path.hasPrefix(path + "/") }
                 if let copied = copiedItem, copied.path == path || copied.path.hasPrefix(path + "/") { copiedItem = nil }
-            case .rename(let path, _):
+                if let moving = movingItem, moving.path == path || moving.path.hasPrefix(path + "/") { movingItem = nil }
+            case .rename(let path, _), .move(let path, _, _):
                 favorites = favorites.map { item in
                     guard item.path == path || item.path.hasPrefix(path + "/") else { return item }
                     let renamed = result.path + item.path.dropFirst(path.count)
@@ -320,14 +332,18 @@ final class BrowserModel: ObservableObject {
                         isDirectory: item.isDirectory, size: item.size)
                 }
                 if let copied = copiedItem, copied.path == path || copied.path.hasPrefix(path + "/") { copiedItem = nil }
+                if let moving = movingItem, moving.path == path || moving.path.hasPrefix(path + "/") { movingItem = nil }
             default: break
             }
             if let data = try? JSONEncoder().encode(favorites) { defaults.set(data, forKey: "Favorites") }
             Log(operation.title, detail: result.lastPathComponent, kind: .success, path: result.path)
+            operationStatus.Complete(operationId, title: operation.title, path: result.path)
             return result
         } catch FileActionError.exists(let name) {
+            operationStatus.Dismiss(operationId)
             throw FileActionError.exists(name)
         } catch {
+            operationStatus.Dismiss(operationId)
             Log("File operation failed", detail: error.localizedDescription, path: operation.permissionPaths.last, error: true)
             throw error
         }
@@ -335,7 +351,14 @@ final class BrowserModel: ObservableObject {
 
     func Copy(_ item: BrowserItem) {
         copiedItem = item
+        movingItem = nil
         Log("Ready to copy", detail: "Choose a destination folder and tap Paste", path: item.path)
+    }
+
+    func Move(_ item: BrowserItem) {
+        movingItem = item
+        copiedItem = nil
+        Log("Ready to move", detail: "Choose a destination folder and tap Move Here", path: item.path)
     }
 
     func VerifyFileOperations(parent: URL? = nil) async {

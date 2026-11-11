@@ -46,6 +46,24 @@ struct ContentView: View {
             if ProcessInfo.processInfo.arguments.contains("--show-activity") { selectedTab = 2 }
             if ProcessInfo.processInfo.arguments.contains("--show-about") { selectedTab = 3 }
             #if DEBUG
+            if ScreenshotData.enabled && (ProcessInfo.processInfo.arguments.contains("--preview-delete-progress") ||
+                                          ProcessInfo.processInfo.arguments.contains("--preview-move-progress") ||
+                                          ProcessInfo.processInfo.arguments.contains("--preview-copy-progress")) {
+                let folder = BrowserItem(path: "/Examples/Notes", name: "Notes", isDirectory: true, size: 0)
+                browsePath = [.folder(folder, nil)]
+                let moving = ProcessInfo.processInfo.arguments.contains("--preview-move-progress")
+                let copying = ProcessInfo.processInfo.arguments.contains("--preview-copy-progress")
+                let title = moving ? "Moving folder" : (copying ? "Copying file" : "Deleting folder")
+                let symbol = moving ? "folder.fill" : (copying ? "doc.on.doc" : "trash")
+                let id = model.operationStatus.Begin(title, symbol: symbol)
+                if copying {
+                    model.operationStatus.Update(id, .init(stage: "Copying", completed: 2_097_152,
+                                                         total: 5_242_880, unit: .bytes))
+                } else {
+                    model.operationStatus.Update(id, .init(stage: moving ? "Moving" : "Deleting",
+                                                         completed: 3, total: 7, unit: .items))
+                }
+            }
             if ProcessInfo.processInfo.arguments.contains("--check-pinned-search") {
                 UserDefaults.standard.set(FolderLayout.list.rawValue, forKey: "FolderLayout")
                 browsePath = [.category(ContainerCategory.all[1])]
@@ -192,11 +210,15 @@ private struct ContainerScreen: View {
     }
 }
 
-private final class PendingCopy {
+private enum TransferMode { case copy, move }
+
+private final class PendingTransfer {
     let source: URL
+    let mode: TransferMode
     private let scoped: Bool
-    init(source: URL) {
+    init(source: URL, mode: TransferMode = .copy) {
         self.source = source
+        self.mode = mode
         scoped = source.startAccessingSecurityScopedResource()
     }
     deinit { if scoped { source.stopAccessingSecurityScopedResource() } }
@@ -217,8 +239,9 @@ private struct FolderScreen: View {
     @State private var deleteItem: BrowserItem?
     @State private var nameInput = ""
     @State private var importing = false
-    @State private var pendingCopy: PendingCopy?
+    @State private var pendingCopy: PendingTransfer?
     @State private var operationError: String?
+    @State private var feedbackPath: String?
     @AppStorage("FolderLayout") private var layout: FolderLayout = .list
     @AppStorage("FolderSort") private var sort: FolderSort = .name
     @AppStorage("SortAscending") private var ascending = true
@@ -231,18 +254,11 @@ private struct FolderScreen: View {
     var body: some View {
         FileCollection(layout: layout) {
             ForEach(filtered) { entry in
-                if entry.isDirectory {
-                    if let category = ContainerCategory.all.first(where: { $0.path == entry.directoryPath }) {
-                        NavigationLink(value: BrowserDestination.category(category)) { ItemLabel(entry) }
-                    } else {
-                        NavigationLink(value: BrowserDestination.folder(entry, model.Root(for: entry.directoryPath) ?? root)) { ItemLabel(entry) }
-                            .contextMenu { ItemActions(entry) }
-                    }
-                } else {
-                    Button { preview = entry } label: { ItemLabel(entry) }
-                        .buttonStyle(.plain)
-                        .contextMenu { ItemActions(entry) }
-                }
+                EntryView(entry)
+                    .transition(.asymmetric(
+                        insertion: .move(edge: .bottom).combined(with: .opacity),
+                        removal: .move(edge: .trailing).combined(with: .opacity)
+                    ))
             }
         }
         .disabled(busy)
@@ -256,7 +272,7 @@ private struct FolderScreen: View {
         .safeAreaInset(edge: .top, spacing: 0) {
             VStack(spacing: 0) {
                 PinnedSearchBar(text: $search, prompt: "Search")
-                if busy { ProgressView("Working…").font(.caption).padding(.bottom, 8) }
+                OperationBanner(status: model.operationStatus)
             }
         }
         .safeAreaInset(edge: .bottom, spacing: 0) { FolderCount(count: filtered.count) }
@@ -268,6 +284,12 @@ private struct FolderScreen: View {
                     if let copied = model.copiedItem {
                         Button("Paste “\(copied.name)”", systemImage: "doc.on.clipboard") { BeginCopy(copied.url) }
                         Button("Cancel Copy", systemImage: "xmark") { model.copiedItem = nil }
+                    }
+                    if let moving = model.movingItem {
+                        Button("Move “\(moving.name)” Here", systemImage: "folder.fill") {
+                            BeginCopy(moving.url, mode: .move)
+                        }
+                        Button("Cancel Move", systemImage: "xmark") { model.movingItem = nil }
                     }
                 }
                 FolderViewOptions()
@@ -281,7 +303,9 @@ private struct FolderScreen: View {
             .disabled(busy)
         }
         .refreshable { if !busy { await Load(refresh: true) } }
-        .task { await Load() }
+        .task {
+            await Load()
+        }
         .sheet(item: $preview) { entry in PreviewScreen(item: entry) }
         .fileImporter(isPresented: $importing, allowedContentTypes: [.item], allowsMultipleSelection: false) { result in
             switch result {
@@ -312,9 +336,12 @@ private struct FolderScreen: View {
         .confirmationDialog("An item named “\(pendingCopy?.source.lastPathComponent ?? "item")” already exists.", isPresented: Binding(
             get: { pendingCopy != nil }, set: { if !$0 { pendingCopy = nil } }), titleVisibility: .visible, presenting: pendingCopy) { request in
             Button("Keep Both") { pendingCopy = nil; Task { await Copy(request, policy: .keepBoth) } }
-            Button("Replace", role: .destructive) { pendingCopy = nil; Task { await Copy(request, policy: .replace) } }
+            Button("Replace File", role: .destructive) {
+                pendingCopy = nil
+                Task { await Copy(request, policy: .replace) }
+            }
             Button("Cancel", role: .cancel) { pendingCopy = nil }
-        } message: { _ in Text("Keep Both creates a separate copy. Replace overwrites an existing file. Folders are never replaced.") }
+        } message: { _ in Text("The destination is prepared first, then the new file replaces the old one. For a move, the source is removed only after the destination is ready. Folders cannot be replaced.") }
         .alert("Couldn’t Complete Action", isPresented: Binding(
             get: { operationError != nil }, set: { if !$0 { operationError = nil } })) {
             Button("OK", role: .cancel) { operationError = nil }
@@ -322,46 +349,132 @@ private struct FolderScreen: View {
         .onDisappear { pendingCopy = nil }
     }
 
+    @ViewBuilder private func EntryView(_ entry: BrowserItem) -> some View {
+        if entry.isDirectory {
+            if let category = ContainerCategory.all.first(where: { $0.path == entry.directoryPath }) {
+                NavigationLink(value: BrowserDestination.category(category)) { ItemLabel(entry) }
+            } else {
+                NavigationLink(value: BrowserDestination.folder(entry, model.Root(for: entry.directoryPath) ?? root)) { ItemLabel(entry) }
+                    .contextMenu { ItemActions(entry) }
+            }
+        } else {
+            Button { preview = entry } label: { ItemLabel(entry) }
+                .buttonStyle(.plain)
+                .contextMenu { ItemActions(entry) }
+        }
+    }
+
     @ViewBuilder private func ItemLabel(_ entry: BrowserItem) -> some View {
-        if layout == .icons { FileTile(item: entry) } else { FileRow(item: entry) }
+        VStack(spacing: 4) {
+            Group {
+                if layout == .icons { FileTile(item: entry) } else { FileRow(item: entry) }
+            }
+            .padding(.horizontal, 4)
+            .background(feedbackPath == entry.path ? Color.blue.opacity(0.14) : Color.clear,
+                        in: RoundedRectangle(cornerRadius: 10))
+        }
     }
     @ViewBuilder private func ItemActions(_ entry: BrowserItem) -> some View {
         Button("Copy", systemImage: "doc.on.doc") { model.Copy(entry) }
+        Button("Move", systemImage: "folder.fill") { model.Move(entry) }
         Button("Rename", systemImage: "pencil") { nameInput = entry.name; renameItem = entry }
         ShareLink(item: entry.url) { Label("Share", systemImage: "square.and.arrow.up") }
         if entry.isDirectory { FavoriteButton(item: entry, model: model) }
         Button("Copy Path", systemImage: "link") { UIPasteboard.general.string = entry.path }
         Button("Delete", systemImage: "trash", role: .destructive) { deleteItem = entry }
     }
-    private func Load(refresh: Bool = false) async {
+    private func Load(refresh: Bool = false, animated: Bool = false) async {
         loading = true
         defer { loading = false }
-        do { items = try await model.Directory(item.directoryPath, root: root, refresh: refresh); message = nil }
+        do {
+            let refreshed = try await model.Directory(item.directoryPath, root: root, refresh: refresh)
+            if animated { withAnimation(.smooth(duration: 0.42)) { items = refreshed } }
+            else { items = refreshed }
+            message = nil
+        }
         catch { message = error.localizedDescription }
     }
     private func Run(_ operation: FileOperation) async {
         guard !busy else { return }; busy = true
         defer { busy = false }
-        do { _ = try await model.Mutate(operation); await Load(refresh: true) }
-        catch { operationError = error.localizedDescription }
+        do {
+            let result = try await model.Mutate(operation)
+            await Load(refresh: true, animated: true)
+            if case .delete = operation { return }
+            Flash(result.path)
+        } catch {
+            await Load(refresh: true, animated: true)
+            operationError = error.localizedDescription
+        }
     }
-    private func BeginCopy(_ source: URL) {
+    private func BeginCopy(_ source: URL, mode: TransferMode = .copy) {
         guard !busy else { return }
-        let request = PendingCopy(source: source)
+        let request = PendingTransfer(source: source, mode: mode)
         Task { await Copy(request, policy: .fail) }
     }
-    private func Copy(_ request: PendingCopy, policy: CollisionPolicy) async {
+    private func Copy(_ request: PendingTransfer, policy: CollisionPolicy) async {
         guard !busy else { return }
         busy = true
         defer { busy = false }
         do {
-            _ = try await model.Mutate(.copy(source: request.source.path, directory: item.directoryPath, policy: policy))
-            await Load(refresh: true)
+            let operation: FileOperation = request.mode == .move
+                ? .move(source: request.source.path, directory: item.directoryPath, policy: policy)
+                : .copy(source: request.source.path, directory: item.directoryPath, policy: policy)
+            let result = try await model.Mutate(operation)
+            if request.mode == .move { model.movingItem = nil }
+            await Load(refresh: true, animated: true)
+            Flash(result.path)
         } catch FileActionError.exists {
             pendingCopy = request
-        } catch { operationError = error.localizedDescription }
+        } catch {
+            if request.mode == .move { await Load(refresh: true, animated: true) }
+            operationError = error.localizedDescription
+        }
     }
 
+    private func Flash(_ path: String) {
+        withAnimation(.easeIn(duration: 0.18)) { feedbackPath = path }
+        Task {
+            try? await Task.sleep(for: .milliseconds(700))
+            if feedbackPath == path {
+                withAnimation(.easeOut(duration: 0.42)) { feedbackPath = nil }
+            }
+        }
+    }
+
+}
+
+private struct OperationBanner: View {
+    @ObservedObject var status: OperationStatus
+    var body: some View {
+        Group {
+            if let active = status.active {
+                HStack(spacing: 12) {
+                    Image(systemName: active.symbol)
+                        .foregroundStyle(active.symbol == "trash" ? Color.red : Color.blue)
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(active.update?.stage ?? active.title).font(.subheadline.weight(.semibold))
+                        if let update = active.update {
+                            if let fraction = update.fraction { ProgressView(value: fraction) }
+                            else { ProgressView() }
+                            Text(update.detail).font(.caption).foregroundStyle(.secondary)
+                        } else { ProgressView() }
+                    }
+                }
+                .padding(12)
+                .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 14))
+                .padding(.horizontal, 16).padding(.bottom, 8)
+                .transition(.move(edge: .top).combined(with: .opacity))
+            } else if let feedback = status.feedback {
+                Label(feedback.title, systemImage: "checkmark.circle.fill")
+                    .font(.caption.weight(.medium)).foregroundStyle(.green)
+                    .padding(.horizontal, 16).padding(.bottom, 8)
+                    .transition(.opacity)
+            }
+        }
+        .animation(.smooth(duration: 0.3), value: status.active?.id)
+        .animation(.smooth(duration: 0.3), value: status.feedback?.id)
+    }
 }
 
 private struct FileCollection<Content: View>: View {
@@ -441,6 +554,8 @@ private struct FolderCount: View {
     var body: some View {
         Text("\(count) \(count == 1 ? "item" : "items")")
             .font(.caption).foregroundStyle(.secondary)
+            .contentTransition(.numericText())
+            .animation(.snappy(duration: 0.32), value: count)
             .frame(maxWidth: .infinity).padding(.vertical, 6).background(.bar)
     }
 }

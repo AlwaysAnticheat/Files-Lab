@@ -37,3 +37,8 @@ The core fixture suite passed locally and on a physical development device. A se
 
 
 The recursive-copy guard canonicalizes the existing destination parent before comparing paths. On iOS, resolving a not-yet-created destination leaf can leave /var unresolved while the existing source resolves to /private/var; a naive prefix comparison then misses a recursive copy. Regression checks cover copying into both the source itself and an existing descendant.
+
+
+## File operation progress
+
+Copies use a coordinated source read and 1 MiB chunks, reporting actual bytes written. The temporary file remains beside the destination until the complete copy is ready; replacement then uses an atomic rename so a failed copy leaves the original in place. Folder deletion enumerates entries before modification and deletes children before their parent, reporting completed/total items. Move stages and copies the destination first, then removes the source; a failed source removal is reported without deleting the new copy. The operation status is published separately from browser state and updates are throttled on the main actor. One top progress card shows bytes or item counts with an action-specific icon. List and grid row changes use bounded SwiftUI transitions. If a deletion fails partway through, the folder is reloaded and the actual OS error is shown.

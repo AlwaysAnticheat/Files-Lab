@@ -20,6 +20,10 @@ These screenshots were captured from the app with its **sample-data mode** enabl
 | --- | --- |
 | <img src="docs/screenshots/activity.png" width="260" alt="Activity tab with sample events"> | <img src="docs/screenshots/about.png" width="260" alt="About tab crediting the original exploit author"> |
 
+| Copy progress | Move progress | Delete progress |
+| --- | --- | --- |
+| <img src="docs/screenshots/progress-copy.png" width="210" alt="One top progress card showing bytes copied"> | <img src="docs/screenshots/progress-move.png" width="210" alt="One top progress card showing a move"> | <img src="docs/screenshots/progress-delete.png" width="210" alt="One top progress card showing deletion count"> |
+
 ## Features
 
 - **Browse:** App Groups, Applications, App Extensions, Internal Daemons, and accessible filesystem locations.
@@ -29,7 +33,8 @@ These screenshots were captured from the app with its **sample-data mode** enabl
 - **Favorites:** persistent shortcuts to folders.
 - **Activity:** searchable event history, an Errors filter, event details, timings, and text export.
 - Native Quick Look previews and sharing.
-- Copy/paste, rename, permanent deletion, new folders, and file import with Keep Both/Replace conflict handling in writable locations.
+- Copy/paste, Move Here, rename, permanent deletion, new folders, and file import with Keep Both/Replace conflict handling in writable locations.
+- One top progress card with a distinct icon for copy, move, and delete; live byte progress for large copies, item-count progress for folder deletion, and smooth folder-row transitions after changes.
 - Cached discovery and bounded directory/log caches.
 - **About:** original author credits, source links, and the bundled GPL license.
 
@@ -39,13 +44,13 @@ Access depends on the underlying PoC and the running iOS version. Some filesyste
 
 Inside a folder:
 
-- Touch and hold a file or folder for **Copy**, **Rename**, **Share**, and **Delete**.
-- After choosing Copy, navigate to the destination and use **••• → Paste**.
+- Touch and hold a file or folder for **Copy**, **Move**, **Rename**, **Share**, and **Delete**.
+- After choosing Copy or Move, navigate to the destination and use **••• → Paste** or **Move Here**.
 - Use **••• → New Folder** or **Import File…** to add content.
 - A name conflict offers **Keep Both**, **Replace**, or **Cancel**. Replace is limited to files; it never merges or replaces folders.
 - Delete requires confirmation and permanently removes the selected item and its contents. There is no Recently Deleted recovery feature.
 
-File copies are staged in the destination directory. Existing-file replacement uses a same-directory atomic rename after the staged copy succeeds. Errors are shown and recorded in Activity. These actions do not bypass additional iOS write restrictions.
+File copies are streamed in bounded chunks and staged in the destination directory. Existing-file replacement uses a same-directory atomic rename after the staged copy succeeds; the original remains until the new copy is ready. Move copies to the destination first, then removes the source; if source removal fails, both locations require review. Folder deletion counts entries first, then reports how many have been removed. Errors are shown and recorded in Activity. These actions do not bypass additional iOS write restrictions.
 
 ## Original project and provenance
 
@@ -120,7 +125,7 @@ Tools/TestCore.sh
 
 This runs the actual file-operation and sorting code against a uniquely named temporary fixture folder. It checks copying, conflicts, atomic replacement, preservation after a failed replacement, keeping both, renaming, deletion, recursive-copy rejection, invalid names, and symlink deletion without deleting its target. Fixture data is removed after the check.
 
-The Debug launch argument `--verify-file-operations` runs the same fixture checks in the app's temporary directory on a physical device. Only disposable test data is changed.
+The Debug launch argument `--verify-file-operations` runs the same fixture checks in the app's temporary directory on a physical device. Only disposable test data is changed. In sample-data mode, `--preview-delete-progress`, `--preview-copy-progress`, and `--preview-move-progress` show each progress design without changing any files.
 
 ## Screenshot mode
 
